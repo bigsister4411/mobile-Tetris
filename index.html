@@ -14,13 +14,13 @@
       justify-content: center;
       align-items: center;
       height: 100vh;
-      touch-action: none; /* Disable default touch gestures */
+      touch-action: none; /* Prevent default touch gestures */
     }
     /* Container for canvas and overlays */
     #gameContainer {
       position: relative;
       width: 100%;
-      max-width: 200px; /* Matches internal game width (10 cells * 20px) */
+      max-width: 200px; /* Matches internal game width (10 cells x 20px) */
     }
     /* Responsive canvas */
     canvas {
@@ -92,6 +92,7 @@
       <p>Tap to rotate the block</p>
       <p>Swipe left/right to move the block</p>
       <p>Swipe down for hard drop</p>
+      <p>Two‑finger tap to pause/resume</p>
       <button id="startButton">Start Game</button>
     </div>
 
@@ -115,6 +116,7 @@
 
     // Global game state variables.
     let gameOver = false;
+    let isPaused = false;
     let dropCounter = 0;
     let dropInterval = 1000; // Drop every 1000ms.
     let lastTime = 0;
@@ -193,12 +195,23 @@
       });
     }
 
-    // Clear the canvas and draw the arena and current piece.
+    // Clear the canvas and draw both the arena and the current piece.
     function draw() {
       context.fillStyle = '#000';
       context.fillRect(0, 0, canvas.width, canvas.height);
       drawMatrix(arena, { x: 0, y: 0 });
       drawMatrix(player.matrix, player.pos);
+      
+      // If paused, overlay "PAUSED" text.
+      if (isPaused) {
+        context.font = "2px Arial";
+        context.fillStyle = "white";
+        const text = "PAUSED";
+        const textWidth = context.measureText(text).width;
+        const centerX = (10 - textWidth) / 2;
+        const centerY = 10; // Rough vertical center
+        context.fillText(text, centerX, centerY);
+      }
     }
 
     // Merge the player's piece into the arena.
@@ -281,7 +294,7 @@
       while (!collide(arena, player)) {
         player.pos.y++;
       }
-      player.pos.y--; // Last valid position.
+      player.pos.y--; // Revert to the last valid position.
       merge(arena, player);
       arenaSweep();
       if (!playerReset()) {
@@ -301,7 +314,7 @@
       }
     }
 
-    // Rotate the player's piece with a basic wall-kick.
+    // Rotate the player's piece with a basic wall kick.
     function playerRotate(dir) {
       const pos = player.pos.x;
       let offset = 1;
@@ -318,7 +331,7 @@
       }
     }
 
-    // Reset the player's piece. Return false if it immediately collides (game over).
+    // Reset the player's piece. Returns false if collision occurs immediately (game over).
     function playerReset() {
       const pieces = 'TJLOSZI';
       player.matrix = createPiece(pieces[Math.floor(Math.random() * pieces.length)]);
@@ -360,11 +373,13 @@
     // Main game loop.
     function update(time = 0) {
       if (gameOver) return;
-      const deltaTime = time - lastTime;
-      lastTime = time;
-      dropCounter += deltaTime;
-      if (dropCounter > dropInterval) {
-        playerDrop();
+      if (!isPaused) {
+        const deltaTime = time - lastTime;
+        lastTime = time;
+        dropCounter += deltaTime;
+        if (dropCounter > dropInterval) {
+          playerDrop();
+        }
       }
       draw();
       requestAnimationFrame(update);
@@ -395,17 +410,23 @@
     /* TOUCH CONTROLS */
     canvas.addEventListener('touchstart', event => {
       event.preventDefault();
-      const touch = event.changedTouches[0];
-      touchStartX = touch.clientX;
-      touchStartY = touch.clientY;
+      // If two fingers are touching, toggle pause.
+      if (event.touches.length === 2) {
+        isPaused = !isPaused;
+        return;
+      }
+      // Otherwise, record the starting touch coordinates (for one-finger gestures).
+      touchStartX = event.touches[0].clientX;
+      touchStartY = event.touches[0].clientY;
     }, false);
 
     canvas.addEventListener('touchend', event => {
       event.preventDefault();
+      // If two fingers were used, we already toggled pause.
+      if (event.changedTouches.length === 2) return;
       const touch = event.changedTouches[0];
       const dx = touch.clientX - touchStartX;
       const dy = touch.clientY - touchStartY;
-
       // If movement is minimal, treat it as a tap → rotate the piece.
       if (Math.abs(dx) < touchThreshold && Math.abs(dy) < touchThreshold) {
         playerRotate(1);
@@ -413,7 +434,7 @@
       }
       // Determine if the gesture is horizontal or vertical.
       if (Math.abs(dx) > Math.abs(dy)) {
-        // Horizontal swipe: move piece left/right.
+        // Horizontal swipe: move left/right.
         if (dx > 0) {
           playerMove(1);
         } else {
