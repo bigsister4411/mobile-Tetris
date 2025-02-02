@@ -1,0 +1,443 @@
+%%html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <!-- Ensure proper scaling on mobile devices -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mobile Tetris</title>
+  <style>
+    body {
+      background: #000;
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      touch-action: none; /* Disable default touch gestures */
+    }
+    /* Container for canvas and overlays */
+    #gameContainer {
+      position: relative;
+      width: 100%;
+      max-width: 200px; /* Matches internal game width (10 cells * 20px) */
+    }
+    /* Responsive canvas */
+    canvas {
+      border: 2px solid #fff;
+      background: #000;
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    /* Instruction overlay styling */
+    #startOverlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #fff;
+      text-align: center;
+      font-size: 1em;
+      padding: 10px;
+      box-sizing: border-box;
+      z-index: 10;
+    }
+    #startOverlay p {
+      margin: 10px 0;
+    }
+    #startButton {
+      margin-top: 20px;
+      padding: 10px 20px;
+      font-size: 1em;
+      cursor: pointer;
+    }
+    /* Game Over overlay styling */
+    #overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.7);
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #fff;
+      font-size: 2em;
+      z-index: 10;
+    }
+    #restartButton {
+      margin-top: 20px;
+      padding: 10px 20px;
+      font-size: 0.8em;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="tetris" width="200" height="400"></canvas>
+
+    <!-- Instruction Overlay -->
+    <div id="startOverlay">
+      <p><strong>Welcome to Tetris</strong></p>
+      <p>Tap to rotate the block</p>
+      <p>Swipe left/right to move the block</p>
+      <p>Swipe down for hard drop</p>
+      <button id="startButton">Start Game</button>
+    </div>
+
+    <!-- Game Over Overlay -->
+    <div id="overlay">
+      <div id="gameOverText">Game Over</div>
+      <button id="restartButton">Start New Game</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('tetris');
+    const context = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const restartButton = document.getElementById('restartButton');
+    const startOverlay = document.getElementById('startOverlay');
+    const startButton = document.getElementById('startButton');
+
+    // Scale internal drawing so each block is 20x20 pixels.
+    context.scale(20, 20);
+
+    // Global game state variables.
+    let gameOver = false;
+    let dropCounter = 0;
+    let dropInterval = 1000; // Drop every 1000ms.
+    let lastTime = 0;
+    let touchStartX = 0;
+    let touchStartY = 0;
+    const touchThreshold = 20; // Minimum movement (in pixels) to count as a swipe.
+
+    // Create a matrix (2D array) filled with zeros.
+    function createMatrix(w, h) {
+      const matrix = [];
+      while (h--) {
+        matrix.push(new Array(w).fill(0));
+      }
+      return matrix;
+    }
+
+    // Create tetromino shapes.
+    function createPiece(type) {
+      switch (type) {
+        case 'T':
+          return [
+            [0, 1, 0],
+            [1, 1, 1],
+            [0, 0, 0]
+          ];
+        case 'O':
+          return [
+            [2, 2],
+            [2, 2]
+          ];
+        case 'L':
+          return [
+            [0, 3, 0],
+            [0, 3, 0],
+            [0, 3, 3]
+          ];
+        case 'J':
+          return [
+            [0, 4, 0],
+            [0, 4, 0],
+            [4, 4, 0]
+          ];
+        case 'I':
+          return [
+            [0, 5, 0, 0],
+            [0, 5, 0, 0],
+            [0, 5, 0, 0],
+            [0, 5, 0, 0]
+          ];
+        case 'S':
+          return [
+            [0, 6, 6],
+            [6, 6, 0],
+            [0, 0, 0]
+          ];
+        case 'Z':
+          return [
+            [7, 7, 0],
+            [0, 7, 7],
+            [0, 0, 0]
+          ];
+        default:
+          return [[0]];
+      }
+    }
+
+    // Draw a matrix on the canvas at a given offset.
+    function drawMatrix(matrix, offset) {
+      matrix.forEach((row, y) => {
+        row.forEach((value, x) => {
+          if (value !== 0) {
+            context.fillStyle = colors[value];
+            context.fillRect(x + offset.x, y + offset.y, 1, 1);
+          }
+        });
+      });
+    }
+
+    // Clear the canvas and draw the arena and current piece.
+    function draw() {
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      drawMatrix(arena, { x: 0, y: 0 });
+      drawMatrix(player.matrix, player.pos);
+    }
+
+    // Merge the player's piece into the arena.
+    function merge(arena, player) {
+      player.matrix.forEach((row, y) => {
+        row.forEach((value, x) => {
+          if (value !== 0) {
+            arena[y + player.pos.y][x + player.pos.x] = value;
+          }
+        });
+      });
+    }
+
+    // Rotate the tetromino matrix.
+    function rotate(matrix, dir) {
+      for (let y = 0; y < matrix.length; y++) {
+        for (let x = 0; x < y; x++) {
+          [matrix[x][y], matrix[y][x]] = [matrix[y][x], matrix[x][y]];
+        }
+      }
+      if (dir > 0) {
+        matrix.forEach(row => row.reverse());
+      } else {
+        matrix.reverse();
+      }
+    }
+
+    // Check for collision between the player's piece and the arena.
+    function collide(arena, player) {
+      const m = player.matrix;
+      const o = player.pos;
+      for (let y = 0; y < m.length; y++) {
+        for (let x = 0; x < m[y].length; x++) {
+          if (m[y][x] !== 0) {
+            if (!arena[y + o.y] || arena[y + o.y][x + o.x] !== 0) {
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    }
+
+    // Clear filled rows.
+    function arenaSweep() {
+      let rowCount = 1;
+      outer: for (let y = arena.length - 1; y >= 0; y--) {
+        for (let x = 0; x < arena[y].length; x++) {
+          if (arena[y][x] === 0) {
+            continue outer;
+          }
+        }
+        const row = arena.splice(y, 1)[0].fill(0);
+        arena.unshift(row);
+        y++;
+        player.score += rowCount * 10;
+        rowCount *= 2;
+      }
+    }
+
+    // Drop the player's piece one row.
+    function playerDrop() {
+      player.pos.y++;
+      if (collide(arena, player)) {
+        player.pos.y--;
+        merge(arena, player);
+        arenaSweep();
+        if (!playerReset()) {
+          gameOver = true;
+          showGameOver();
+          return;
+        }
+        updateScore();
+      }
+      dropCounter = 0;
+    }
+
+    // Hard drop: instantly drop the piece.
+    function hardDrop() {
+      while (!collide(arena, player)) {
+        player.pos.y++;
+      }
+      player.pos.y--; // Last valid position.
+      merge(arena, player);
+      arenaSweep();
+      if (!playerReset()) {
+        gameOver = true;
+        showGameOver();
+        return;
+      }
+      updateScore();
+      dropCounter = 0;
+    }
+
+    // Move the player's piece left/right.
+    function playerMove(dir) {
+      player.pos.x += dir;
+      if (collide(arena, player)) {
+        player.pos.x -= dir;
+      }
+    }
+
+    // Rotate the player's piece with a basic wall-kick.
+    function playerRotate(dir) {
+      const pos = player.pos.x;
+      let offset = 1;
+      const originalMatrix = player.matrix.map(row => row.slice());
+      rotate(player.matrix, dir);
+      while (collide(arena, player)) {
+        player.pos.x += offset;
+        offset = -(offset + (offset > 0 ? 1 : -1));
+        if (Math.abs(offset) > player.matrix[0].length) {
+          player.matrix = originalMatrix;
+          player.pos.x = pos;
+          return;
+        }
+      }
+    }
+
+    // Reset the player's piece. Return false if it immediately collides (game over).
+    function playerReset() {
+      const pieces = 'TJLOSZI';
+      player.matrix = createPiece(pieces[Math.floor(Math.random() * pieces.length)]);
+      player.pos.y = 0;
+      player.pos.x = Math.floor((arena[0].length / 2) - (player.matrix[0].length / 2));
+      if (collide(arena, player)) {
+        return false;
+      }
+      return true;
+    }
+
+    // Update the score display (currently logs to the console).
+    function updateScore() {
+      console.log("Score: " + player.score);
+    }
+
+    // Show the Game Over overlay.
+    function showGameOver() {
+      overlay.style.display = 'flex';
+    }
+
+    // Hide the Game Over overlay.
+    function hideGameOver() {
+      overlay.style.display = 'none';
+    }
+
+    // Restart the game.
+    function restartGame() {
+      arena.forEach(row => row.fill(0));
+      player.score = 0;
+      dropCounter = 0;
+      lastTime = 0;
+      gameOver = false;
+      hideGameOver();
+      playerReset();
+      update();
+    }
+
+    // Main game loop.
+    function update(time = 0) {
+      if (gameOver) return;
+      const deltaTime = time - lastTime;
+      lastTime = time;
+      dropCounter += deltaTime;
+      if (dropCounter > dropInterval) {
+        playerDrop();
+      }
+      draw();
+      requestAnimationFrame(update);
+    }
+
+    // Colors for tetromino pieces.
+    const colors = [
+      null,
+      '#FF0D72', // T
+      '#0DC2FF', // O
+      '#0DFF72', // L
+      '#F538FF', // J
+      '#FF8E0D', // I
+      '#FFE138', // S
+      '#3877FF'  // Z
+    ];
+
+    // Create the game arena (10 columns x 20 rows).
+    let arena = createMatrix(10, 20);
+
+    // The player object.
+    const player = {
+      pos: { x: 0, y: 0 },
+      matrix: null,
+      score: 0
+    };
+
+    /* TOUCH CONTROLS */
+    canvas.addEventListener('touchstart', event => {
+      event.preventDefault();
+      const touch = event.changedTouches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+    }, false);
+
+    canvas.addEventListener('touchend', event => {
+      event.preventDefault();
+      const touch = event.changedTouches[0];
+      const dx = touch.clientX - touchStartX;
+      const dy = touch.clientY - touchStartY;
+
+      // If movement is minimal, treat it as a tap → rotate the piece.
+      if (Math.abs(dx) < touchThreshold && Math.abs(dy) < touchThreshold) {
+        playerRotate(1);
+        return;
+      }
+      // Determine if the gesture is horizontal or vertical.
+      if (Math.abs(dx) > Math.abs(dy)) {
+        // Horizontal swipe: move piece left/right.
+        if (dx > 0) {
+          playerMove(1);
+        } else {
+          playerMove(-1);
+        }
+      } else {
+        // Vertical swipe: if swiped down, perform hard drop.
+        if (dy > 0) {
+          hardDrop();
+        }
+      }
+    }, false);
+
+    // Start button event.
+    startButton.addEventListener('click', () => {
+      startOverlay.style.display = 'none';
+      playerReset();
+      update();
+    });
+
+    // Restart button event.
+    restartButton.addEventListener('click', () => {
+      restartGame();
+    });
+  </script>
+</body>
+</html>
